@@ -794,6 +794,7 @@ public class Sistema {
 							System.out.println("Não foi possível desalocar o programa.");
 						} else {
 							System.out.println("Programa desalocado.");
+							vm.mem.dump(0, vm.tamMem);
 						}
 						menu();
 						break;
@@ -822,6 +823,7 @@ public class Sistema {
 									System.out.println("Não foi possível desalocar o programa.");
 								} else {
 									System.out.println("Programa desalocado.");
+									vm.mem.dump(0, vm.tamMem);
 								}
 								break;
 							}
@@ -899,7 +901,19 @@ public class Sistema {
 							if (contFinalizados == gp.filaProcessos.size()) {
 								break;
 							}
+
 						}
+
+						int[] idsProcessos = new int[gp.filaProcessos.size()];
+
+						for(int k = 0; k< gp.filaProcessos.size(); k++){
+							idsProcessos[k] = gp.filaProcessos.get(k).id;
+						}
+
+						for(int j = 0; j < idsProcessos.length; j++){
+							gp.desalocaProcesso(idsProcessos[j]);
+						}
+						
 						menu();
 						break;
 					case "exit":
@@ -1066,7 +1080,7 @@ public class Sistema {
 					filaProcessos.remove(i);
 					clearMemoria(pcb.programa, pcb.framesAlocados);
 					vm.gm.desaloca(pcb.framesAlocados);
-					vm.mem.dump(0, vm.tamMem);
+					// vm.mem.dump(0, vm.tamMem);
 					return true;
 				}
 			}
