@@ -9,11 +9,15 @@
 
 import java.util.*;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class Sistema {
 
 	public Semaphore processReady = new Semaphore(1);
 	public Semaphore filaProntosMutex = new Semaphore(1);
+
+	public volatile boolean emptyReady = true;
+	public List<PCB> listaProntos = Collections.synchronizedList(new ArrayList<PCB>());
 
 	// -------------------------------------------------------------------------------------------------------
 	// --------------------- H A R D W A R E - definicoes de HW
@@ -25,7 +29,7 @@ public class Sistema {
 
 	public class Memory {
 		public int tamMem;
-		public Word[] m; // m representa a memória fisica: um array de posicoes de memoria (word)
+		public volatile Word[] m; // m representa a memória fisica: um array de posicoes de memoria (word)
 
 		public Memory(int size) {
 			tamMem = size;
@@ -110,7 +114,7 @@ public class Sistema {
 							// nas proximas versoes isto pode modificar
 
 		private Memory mem; // mem tem funcoes de dump e o array m de memória 'fisica'
-		private Word[] m; // CPU acessa MEMORIA, guarda referencia a 'm'. m nao muda. semre será um array
+		private volatile Word[] m; // CPU acessa MEMORIA, guarda referencia a 'm'. m nao muda. semre será um array
 							// de palavras
 
 		private InterruptHandling ih; // significa desvio para rotinas de tratamento de Int - se int ligada, desvia
@@ -119,7 +123,7 @@ public class Sistema {
 
 		private GP gp;
 
-		public CPU(Memory _mem, InterruptHandling _ih, SysCallHandling _sysCall, boolean _debug, GP gp) { // ref a MEMORIA e
+		public CPU(Memory _mem, InterruptHandling _ih, SysCallHandling _sysCall, boolean _debug, GP _gp) { // ref a MEMORIA e
 																									// interrupt handler
 																									// passada na
 																									// criacao da CPU
@@ -131,17 +135,60 @@ public class Sistema {
 			ih = _ih; // aponta para rotinas de tratamento de int
 			sysCall = _sysCall; // aponta para rotinas de tratamento de chamadas de sistema
 			debug = _debug; // se true, print da instrucao em execucao
-			this.gp = gp;
+			gp =  _gp;
 		}
 
 		public void run(){
+			//Escalonador
 			while (true) {
 				try {
-					if(gp.filaProcessos.size() > 0){
-						System.out.println(gp.filaProcessos.size());
-							processReady.acquire();
-							System.out.println("Batatinhas");
-							processReady.release();
+					if(listaProntos.size() > 0){
+						processReady.acquire();
+						System.out.println("BATATA CARAIO");
+						System.out.println(listaProntos.size());
+						System.out.println(vm.tamMem);
+
+						for(int i = 0; i < listaProntos.size(); i++){
+							System.out.println(listaProntos.get(i).id);
+							for(int j = 0; j < listaProntos.get(i).framesAlocados.size(); j ++){
+								System.out.println(listaProntos.get(i).framesAlocados.get(j));
+							}
+						}
+					
+						while (true) {
+							int contFinalizados = 0;
+
+							for (int i = 0; i < listaProntos.size(); i++) {
+								PCB pcb = listaProntos.get(i);
+								if (pcb.estado == "PRONTO") {
+									System.out.println("Process ID: " + pcb.id);
+									System.out.println("Ponteiro running: " + gp.running);
+									setContext(0, vm.tamMem - 1, 0);
+									executa(listaProntos.get(i));
+
+								} else {
+									contFinalizados++;
+								}
+							}
+
+							if (contFinalizados == listaProntos.size()) {
+								break;
+							}
+
+						}
+
+						// // DESALOCADOR AUTOMATICO
+						// int[] idsProcessos = new int[listaProntos.size()];
+
+						// for (int k = 0; k < listaProntos.size(); k++) {
+						// 	idsProcessos[k] = listaProntos.get(k).id;
+						// }
+
+						// for (int j = 0; j < idsProcessos.length; j++) {
+						// 	gp.desalocaProcesso(idsProcessos[j]);
+						// }
+
+						processReady.acquire();
 					}
 				} catch (InterruptedException e) {
 					e.printStackTrace();
@@ -542,8 +589,8 @@ public class Sistema {
 	public class VM {
 		public int tamMem;
 		public int tamPag;
-		public Word[] m;
-		public Memory mem;
+		public volatile Word[] m;
+		public volatile Memory mem;
 		public CPU cpu;
 		public GM gm;
 		public GP gp;
@@ -628,7 +675,7 @@ public class Sistema {
 	// ------------------ U T I L I T A R I O S D O S I S T E M A
 	// -----------------------------------------
 	// ------------------ load é invocado a partir de requisição do usuário
-	private void loadProgram(Word[] p, Word[] m) {
+	private synchronized void loadProgram(Word[] p, Word[] m) {
 		for (int i = 0; i < p.length; i++) {
 			m[tradutorEnderecoCriar(i)].opc = p[i].opc;
 			m[tradutorEnderecoCriar(i)].r1 = p[i].r1;
@@ -679,7 +726,7 @@ public class Sistema {
 		return (inicioFrame + offset);
 	}
 
-	private void loadProgram(Word[] p) {
+	private synchronized void loadProgram(Word[] p) {
 		loadProgram(p, vm.m);
 	}
 
@@ -1067,10 +1114,10 @@ public class Sistema {
 		public int registro = 0;
 
 		public GP() {
-			this.filaProcessos = new ArrayList<PCB>();
+			this.filaProcessos = Collections.synchronizedList(new ArrayList<PCB>());
 		}
 
-		public boolean criaProcesso(Word[] programa) {
+		public synchronized boolean criaProcesso(Word[] programa) {
 			try {
 				if (vm.gm.aloca(programa.length)) {
 					filaProntosMutex.acquire();
@@ -1079,8 +1126,9 @@ public class Sistema {
 					ArrayList<Integer> paginasAlocadas = vm.gm.framesAlocados;
 					PCB proc = new PCB(registro, "PRONTO", 0, paginasAlocadas, programa);
 					filaProcessos.add(proc);
+					listaProntos.add(proc);
+					emptyReady = false;
 	
-					System.out.println("");
 					int[] tabelaPaginas = vm.gm.tabelaPaginas;
 					System.out.println("-------------Tabela de Páginas--------------");
 					for (int i = 0; i < tabelaPaginas.length; i++) {
@@ -1119,6 +1167,7 @@ public class Sistema {
 				if (filaProcessos.get(i).id == id_processo) {
 					pcb = filaProcessos.get(i);
 					filaProcessos.remove(i);
+					listaProntos.remove(i);
 					clearMemoria(pcb.programa, pcb.framesAlocados);
 					vm.gm.desaloca(pcb.framesAlocados);
 					// vm.mem.dump(0, vm.tamMem);
