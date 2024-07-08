@@ -12,6 +12,9 @@ import java.util.concurrent.Semaphore;
 
 public class Sistema {
 	public volatile boolean executar = false;
+	public volatile boolean ioNeeded = false;
+	public Semaphore bloqueiaMenu = new Semaphore(1);
+
 
 	// -------------------------------------------------------------------------------------------------------
 	// --------------------- H A R D W A R E - definicoes de HW
@@ -90,7 +93,7 @@ public class Sistema {
 	}
 
 	public enum Interrupts { // possiveis interrupcoes que esta CPU gera
-		noInterrupt, intEnderecoInvalido, intInstrucaoInvalida, intOverflow, intSTOP, intTimeOut;
+		noInterrupt, intEnderecoInvalido, intInstrucaoInvalida, intOverflow, intSTOP, intTimeOut, intIO;
 	}
 
 	public class CPU extends Thread{
@@ -112,7 +115,7 @@ public class Sistema {
 							// de palavras
 
 		private InterruptHandling ih; // significa desvio para rotinas de tratamento de Int - se int ligada, desvia
-		private SysCallHandling sysCall; // significa desvio para tratamento de chamadas de sistema - trap
+		private volatile SysCallHandling sysCall; // significa desvio para tratamento de chamadas de sistema - trap
 		private boolean debug; // se true entao mostra cada instrucao em execucao
 		private volatile GP gp;
 
@@ -171,10 +174,10 @@ public class Sistema {
 								PCB pcb = gp.filaProcessos.get(i);
 								if (pcb.estado == "PRONTO") {
 									System.out.println("Process ID: " + pcb.id);
-									System.out.println("Ponteiro running: " + gp.running);
 									setContext(0, vm.tamMem - 1, 0);
 									executa(gp.filaProcessos.get(i));
-								} else {
+
+								} if(pcb.estado == "FINALIZADO") {
 									contFinalizados++;
 								}
 							}
@@ -246,12 +249,12 @@ public class Sistema {
 							break;
 
 						case LDD: // Rd <- [A]
-							if (legal(ir.p, framesAlocados)) {
-								reg[ir.r1] = m[tradutorEndereco(ir.p, framesAlocados)].p;
-								pcb.statusReg[ir.r1] = m[tradutorEndereco(ir.p, framesAlocados)].p;
-								pc++;
-								pcb.pc++;
-							}
+							System.out.print("IR.P: " + ir.p);
+							reg[ir.r1] = m[ir.p].p;
+							pcb.statusReg[ir.r1] = reg[ir.r1];
+							pc++;
+							pcb.pc++;
+
 							cont++;
 							if (cont == 2)
 								irpt = Interrupts.intTimeOut;
@@ -517,8 +520,9 @@ public class Sistema {
 
 						// Chamada de sistema
 						case TRAP:
-							sysCall.handle(pcb); // <<<<< aqui desvia para rotina de chamada de sistema, no momento so
+							sysCall.filaIOS.add(pcb); // <<<<< aqui desvia para rotina de chamada de sistema, no momento so
 												// temos IO
+							irpt = Interrupts.intIO;
 							pc++;
 							pcb.pc++;
 							cont++;
@@ -628,8 +632,13 @@ public class Sistema {
 			} else if (irpt == Interrupts.intSTOP) {
 				pcb.estado = "FINALIZADO";
 				irpt = Interrupts.noInterrupt;
-
-			} else {
+			
+		
+			} else if (irpt == Interrupts.intIO){
+				pcb.estado = "BLOQUEADO";
+				irpt = Interrupts.noInterrupt;
+			}
+			else {
 				pcb.estado = "FINALIZADO";
 			}
 
@@ -638,8 +647,10 @@ public class Sistema {
 
 	// ------------------- C H A M A D A S D E S I S T E M A - rotinas de tratamento
 	// ----------------------
-	public class SysCallHandling {
+	public class SysCallHandling extends Thread{
 		private VM vm;
+
+		public volatile List<PCB> filaIOS = Collections.synchronizedList(new ArrayList<PCB>());
 
 		public void setVM(VM _vm) {
 			vm = _vm;
@@ -649,10 +660,28 @@ public class Sistema {
 			Scanner scanner = new Scanner(System.in);
 			System.out.println("                                               Chamada de Sistema com op  /  par:  "
 					+ vm.cpu.reg[8] + " / " + vm.cpu.reg[9]);
-			pcb.estado = "BLOQUEADO";
-			System.out.println("O processo" + pcb.id + "precisa de um retorno numérico do dispositivo");
+			System.out.println("O processo: " + pcb.id + " precisa de um retorno numérico do dispositivo.");
 			int num = scanner.nextInt();
+			pcb.estado = "PRONTO";
 
+		}
+
+		public void run(){
+			while(true){
+				if(filaIOS.size() > 0){
+					try {
+						bloqueiaMenu.acquire();
+						for(int i = 0; i < filaIOS.size(); i++){
+							PCB processo = filaIOS.get(i);
+							handle(processo);
+						}
+						bloqueiaMenu.release();
+					} catch (InterruptedException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+				}
+			}
 		}
 	}
 
@@ -737,6 +766,7 @@ public class Sistema {
 	public Sistema() { // a VM com tratamento de interrupções
 		ih = new InterruptHandling();
 		sysCall = new SysCallHandling();
+		sysCall.start();
 		vm = new VM(ih, sysCall);
 		sysCall.setVM(vm);
 		progs = new Programas();
@@ -773,7 +803,14 @@ public class Sistema {
 		}
 
 		public void run(){
-			menu();
+			while (true) {
+				try {
+					bloqueiaMenu.acquire();
+					menu();
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+				}
+			}
 		}
 
 		public void menu() {
@@ -809,36 +846,43 @@ public class Sistema {
 								case "fat":
 									gp.criaProcesso(progs.fatorial);
 									System.out.println("Programa carregado.");
+									bloqueiaMenu.release();
 									break;
 								case "fattrap":
 									gp.criaProcesso(progs.fatorialTRAP);
 									System.out.println("Programa carregado.");
+									bloqueiaMenu.release();
 									break;
 								case "min":
 									gp.criaProcesso(progs.progMinimo);
 									System.out.println("Programa carregado.");
+									bloqueiaMenu.release();
 									break;
 								case "fib10":
 									gp.criaProcesso(progs.fibonacci10);
 									System.out.println("Programa carregado.");
+									bloqueiaMenu.release();
 									break;
 								case "fibtrap":
 									gp.criaProcesso(progs.fibonacciTRAP);
 									System.out.println("Programa carregado.");
+									bloqueiaMenu.release();
 									break;
 								case "pc":
 									gp.criaProcesso(progs.PC);
 									System.out.println("Programa carregado.");
+									bloqueiaMenu.release();
 									break;
 								case "pb":
 									gp.criaProcesso(progs.PB);
 									System.out.println("Programa carregado.");
+									bloqueiaMenu.release();
 									break;
 								default:
 									System.out.println("Opção inválida.");
+									bloqueiaMenu.release();
 									break;
 							}
-							menu();
 							break;
 						case "rm":
 							int opc;
@@ -856,13 +900,13 @@ public class Sistema {
 								System.out.println("Programa desalocado.");
 								vm.mem.dump(0, vm.tamMem);
 							}
-							menu();
+							bloqueiaMenu.release();
 							break;
 						case "executa":
 							System.out.println("Qual processo você deseja executar?");
 							if (gp.filaProcessos.isEmpty()) {
 								System.out.println("Sem programas para executar.");
-								menu();
+								bloqueiaMenu.release();
 								break;
 							}
 							for (int i = 0; i < gp.filaProcessos.size(); i++) {
@@ -890,13 +934,13 @@ public class Sistema {
 									break;
 								}
 							}
-							menu();
+							bloqueiaMenu.release();
 							break;
 						case "ps":
 							System.out.println("Lista de processos: ");
 							if (gp.filaProcessos.isEmpty()) {
 								System.out.println("Sem programas carregados.");
-								menu();
+								bloqueiaMenu.release();
 								break;
 							}
 							for (int i = 0; i < gp.filaProcessos.size(); i++) {
@@ -905,7 +949,7 @@ public class Sistema {
 								System.out.println("PC: " + gp.filaProcessos.get(i).pc);
 								System.out.println("FRAMES ALOCADOS: " + gp.filaProcessos.get(i).framesAlocados + "\n");
 							}
-							menu();
+							bloqueiaMenu.release();
 							break;
 						case "dump":
 							System.out.println("Qual o id do processo desejado?");
@@ -928,7 +972,7 @@ public class Sistema {
 									break;
 								}
 							}
-							menu();
+							bloqueiaMenu.release();
 							break;
 						case "dumpm":
 							System.out.println("Diga a posição de início: ");
@@ -941,7 +985,8 @@ public class Sistema {
 								vm.mem.dump(ini, fim);
 							else
 								System.out.println("Posição inválida.");
-							menu();
+
+							bloqueiaMenu.release();
 							break;
 	
 						case "execall":
@@ -950,17 +995,21 @@ public class Sistema {
 							} else {
 								System.out.println("Nenhum programa pronto para executar.");
 							}
-							menu();
+							bloqueiaMenu.release();
 							break;
 						case "exit":
 							System.out.println("Fim do programa!");
 							System.exit(0);
+							bloqueiaMenu.release();
 							break;
+
 						default:
 							System.out.println("Opção inválida.");
-							menu();
+							bloqueiaMenu.release();
 							break;
 					}
+
+					break;
 				}
 			}	
 	}
@@ -1012,6 +1061,10 @@ public class Sistema {
 				nroPaginas++;
 			}
 
+			if(nroPalavras == 7){
+				nroPaginas++;
+			}
+
 			System.out.println("Número de Páginas: " + nroPaginas);
 
 			for (int i = 0; i < frames.length; i++) {
@@ -1048,7 +1101,7 @@ public class Sistema {
 
 	public class PCB {
 		int id;
-		String estado;
+		public volatile String estado;
 		int pc;
 		ArrayList<Integer> framesAlocados;
 		int[] statusReg;
@@ -1102,6 +1155,7 @@ public class Sistema {
 				vm.mem.dump(0, vm.tamMem); // dump da memoria nestas posicoes
 
 				// s.loadAndExec(proc);
+				executar = true;
 				return true;
 			}
 			System.out.println("Não conseguiu alocar");
