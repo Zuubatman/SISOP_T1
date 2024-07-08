@@ -827,11 +827,13 @@ public class Sistema {
 							scanner.nextLine();
 							for (int i = 0; i < gp.filaProcessos.size(); i++) {
 								if (gp.filaProcessos.get(i).id == opc) {
-									gp.setRunning(opc);
-									System.out.println("Ponteiro running: " + gp.running);
-									vm.cpu.setContext(0, vm.tamMem - 1, 0);
-									vm.cpu.run(gp.filaProcessos.get(i));
-									gp.setRunning(-1);
+									while (gp.filaProcessos.get(i).estado == "PRONTO") {
+										gp.setRunning(opc);
+										System.out.println("Ponteiro running: " + gp.running);
+										vm.cpu.setContext(0, vm.tamMem - 1, 0);
+										vm.cpu.run(gp.filaProcessos.get(i));
+										gp.setRunning(-1);
+									}
 									if (!gp.desalocaProcesso(gp.filaProcessos.get(i).id)) {
 										System.out.println("Não foi possível desalocar o programa.");
 									} else {
@@ -917,16 +919,16 @@ public class Sistema {
 	
 							}
 	
-							// //DESALOCADOR AUTOMATICO
-							// int[] idsProcessos = new int[gp.filaProcessos.size()];
+							//DESALOCADOR AUTOMATICO
+							int[] idsProcessos = new int[gp.filaProcessos.size()];
 	
-							// for(int k = 0; k< gp.filaProcessos.size(); k++){
-							// 	idsProcessos[k] = gp.filaProcessos.get(k).id;
-							// }
+							for(int k = 0; k< gp.filaProcessos.size(); k++){
+								idsProcessos[k] = gp.filaProcessos.get(k).id;
+							}
 	
-							// for(int j = 0; j < idsProcessos.length; j++){
-							// 	gp.desalocaProcesso(idsProcessos[j]);
-							// }
+							for(int j = 0; j < idsProcessos.length; j++){
+								gp.desalocaProcesso(idsProcessos[j]);
+							}
 							
 							menu();
 							break;
