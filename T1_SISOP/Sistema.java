@@ -995,6 +995,10 @@ public class Sistema {
 				nroPaginas++;
 			}
 
+			if(nroPalavras == 7){
+				nroPaginas++;
+			}
+
 			System.out.println("Número de Páginas: " + nroPaginas);
 
 			for (int i = 0; i < frames.length; i++) {
