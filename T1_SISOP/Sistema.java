@@ -11,6 +11,7 @@ import java.util.*;
 import java.util.concurrent.Semaphore;
 
 public class Sistema {
+	public volatile boolean executar = false;
 
 	// -------------------------------------------------------------------------------------------------------
 	// --------------------- H A R D W A R E - definicoes de HW
@@ -92,7 +93,7 @@ public class Sistema {
 		noInterrupt, intEnderecoInvalido, intInstrucaoInvalida, intOverflow, intSTOP, intTimeOut;
 	}
 
-	public class CPU {
+	public class CPU extends Thread{
 		private int maxInt; // valores maximo e minimo para inteiros nesta cpu
 		private int minInt;
 		// característica do processador: contexto da CPU ...
@@ -113,8 +114,9 @@ public class Sistema {
 		private InterruptHandling ih; // significa desvio para rotinas de tratamento de Int - se int ligada, desvia
 		private SysCallHandling sysCall; // significa desvio para tratamento de chamadas de sistema - trap
 		private boolean debug; // se true entao mostra cada instrucao em execucao
+		private volatile GP gp;
 
-		public CPU(Memory _mem, InterruptHandling _ih, SysCallHandling _sysCall, boolean _debug) { // ref a MEMORIA e
+		public CPU(Memory _mem, InterruptHandling _ih, SysCallHandling _sysCall, boolean _debug, GP _gp) { // ref a MEMORIA e
 																									// interrupt handler
 																									// passada na
 																									// criacao da CPU
@@ -126,6 +128,7 @@ public class Sistema {
 			ih = _ih; // aponta para rotinas de tratamento de int
 			sysCall = _sysCall; // aponta para rotinas de tratamento de chamadas de sistema
 			debug = _debug; // se true, print da instrucao em execucao
+			gp = _gp;
 		}
 
 		private boolean legal(int e, ArrayList<Integer> framesAlocados) { // todo acesso a memoria tem que ser
@@ -158,7 +161,47 @@ public class Sistema {
 			irpt = Interrupts.noInterrupt; // reset da interrupcao registrada
 		}
 
-		public void run(PCB pcb) { // execucao da CPU supoe que o contexto da CPU, vide acima,
+		public void run(){
+			while(true){
+					if(executar){
+						while (true) {
+							int contFinalizados = 0;
+
+							for (int i = 0; i < gp.filaProcessos.size(); i++) {
+								PCB pcb = gp.filaProcessos.get(i);
+								if (pcb.estado == "PRONTO") {
+									System.out.println("Process ID: " + pcb.id);
+									System.out.println("Ponteiro running: " + gp.running);
+									setContext(0, vm.tamMem - 1, 0);
+									executa(gp.filaProcessos.get(i));
+								} else {
+									contFinalizados++;
+								}
+							}
+
+							if (contFinalizados == gp.filaProcessos.size()) {
+								break;
+							}
+
+						}
+
+						//DESALOCADOR AUTOMATICO
+						int[] idsProcessos = new int[gp.filaProcessos.size()];
+
+						for(int k = 0; k< gp.filaProcessos.size(); k++){
+							idsProcessos[k] = gp.filaProcessos.get(k).id;
+						}
+
+						for(int j = 0; j < idsProcessos.length; j++){
+							gp.desalocaProcesso(idsProcessos[j]);
+						}
+
+						executar = false;
+					}
+			}
+		}
+
+		public void executa(PCB pcb) { // execucao da CPU supoe que o contexto da CPU, vide acima,
 									// esta devidamente
 			// setado
 			int cont = 0;
@@ -227,9 +270,6 @@ public class Sistema {
 							break;
 
 						case STD: // [A] ← Rs
-							System.out.println("IR.P: " + ir.p);
-							System.out.println("ENDEREÇO TRADUZIDO: " + tradutorEndereco(ir.p, framesAlocados));
-							System.out.println("REGISTRADOR: " + reg[ir.r1]);
 							if (legal(tradutorEndereco(ir.p, framesAlocados), framesAlocados)) {
 								m[tradutorEndereco(ir.p, framesAlocados)].opc = Opcode.DATA;
 								m[tradutorEndereco(ir.p, framesAlocados)].p = reg[ir.r1];
@@ -242,7 +282,6 @@ public class Sistema {
 							break;
 
 						case STX: // [Rd] ←Rs
-							System.out.println("COISO:" + reg[ir.r1]);
 							if(legal(reg[ir.r1], framesAlocados)){
 								m[tradutorEndereco(reg[ir.r1], framesAlocados)].opc = Opcode.DATA;
 								m[tradutorEndereco(reg[ir.r1], framesAlocados)].p = reg[ir.r2];
@@ -505,6 +544,13 @@ public class Sistema {
 
 				// --------------------------------------------------------------------------------------------------
 				// VERIFICA INTERRUPÇÃO !!! - TERCEIRA FASE DO CICLO DE INSTRUÇÕES
+
+				try {
+					Thread.sleep(250); // 500 milissegundos = 0.5 segundos
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+				} 
+
 				if (!(irpt == Interrupts.noInterrupt)) { // existe interrupção
 					ih.handle(irpt, pc, pcb); // desvia para rotina de tratamento
 					break; // break sai do loop da cpu
@@ -527,7 +573,8 @@ public class Sistema {
 		public Memory mem;
 		public CPU cpu;
 		public GM gm;
-		public GP gp;
+		public volatile GP gp;
+		public Menu menu;
 
 		public VM(InterruptHandling ih, SysCallHandling sysCall) {
 			// vm deve ser configurada com endereço de tratamento de interrupcoes e de
@@ -540,8 +587,12 @@ public class Sistema {
 			m = mem.m; // RETORNAR A PAGINA LIVRE PRA ALOCAR O PROGRAMA
 			gm = new GM(mem, tamMem, tamPag);
 
+			cpu = new CPU(mem, ih, sysCall, true, gp); // true liga debug
+			cpu.start();
+			menu = new Menu(gp);
+			menu.start();
+
 			// cria cpu
-			cpu = new CPU(mem, ih, sysCall, true); // true liga debug
 
 		}
 	}
@@ -648,8 +699,6 @@ public class Sistema {
 
 	public int tradutorEndereco(int posicaoLogica, ArrayList<Integer> framesAlocados) {
 
-		System.out.println("POSIÇÃO LÓGICA: " + posicaoLogica);
-
 		int emQPaginaEstou = posicaoLogica / vm.tamPag;
 
 		int offset = posicaoLogica % vm.tamPag;
@@ -703,7 +752,7 @@ public class Sistema {
 		Sistema s = new Sistema();
 		// s.loadAndExec(progs.fatorial);
 		// s.loadAndExec(progs.fibonacci10, 2);
-		s.inicializar();
+		// s.inicializar();
 		// s.loadAndExec(progs.progMinimo);
 		// s.loadAndExec(progs.fatorial);
 		// s.loadAndExec(progs.fatorialTRAP); // saida
@@ -713,20 +762,18 @@ public class Sistema {
 
 	}
 
-	public void inicializar() {
-		GP gp = new GP();
-		Menu m = new Menu();
-		m.menu();
-	}
 
-	public class Menu {
-		public GP gp;
+	public class Menu extends Thread{
+		public volatile GP gp;
 		Scanner scanner;
 		
-		public Menu() {
-			gp = new GP();
+		public Menu(GP _gp) {
+			gp = _gp;
 			scanner = new Scanner(System.in);
-			// new Thread(new MenuThread()).start();
+		}
+
+		public void run(){
+			menu();
 		}
 
 		public void menu() {
@@ -831,7 +878,7 @@ public class Sistema {
 										gp.setRunning(opc);
 										System.out.println("Ponteiro running: " + gp.running);
 										vm.cpu.setContext(0, vm.tamMem - 1, 0);
-										vm.cpu.run(gp.filaProcessos.get(i));
+										vm.cpu.executa(gp.filaProcessos.get(i));
 										gp.setRunning(-1);
 									}
 									if (!gp.desalocaProcesso(gp.filaProcessos.get(i).id)) {
@@ -898,38 +945,11 @@ public class Sistema {
 							break;
 	
 						case "execall":
-							while (true) {
-								int contFinalizados = 0;
-	
-								for (int i = 0; i < gp.filaProcessos.size(); i++) {
-									PCB pcb = gp.filaProcessos.get(i);
-									if (pcb.estado == "PRONTO") {
-										System.out.println("Process ID: " + pcb.id);
-										System.out.println("Ponteiro running: " + gp.running);
-										vm.cpu.setContext(0, vm.tamMem - 1, 0);
-										vm.cpu.run(gp.filaProcessos.get(i));
-									} else {
-										contFinalizados++;
-									}
-								}
-	
-								if (contFinalizados == gp.filaProcessos.size()) {
-									break;
-								}
-	
+							if(gp.filaProcessos.size() > 0){
+								executar = true;
+							} else {
+								System.out.println("Nenhum programa pronto para executar.");
 							}
-	
-							//DESALOCADOR AUTOMATICO
-							int[] idsProcessos = new int[gp.filaProcessos.size()];
-	
-							for(int k = 0; k< gp.filaProcessos.size(); k++){
-								idsProcessos[k] = gp.filaProcessos.get(k).id;
-							}
-	
-							for(int j = 0; j < idsProcessos.length; j++){
-								gp.desalocaProcesso(idsProcessos[j]);
-							}
-							
 							menu();
 							break;
 						case "exit":
@@ -942,16 +962,7 @@ public class Sistema {
 							break;
 					}
 				}
-			}
-
-		private class MenuThread implements Runnable {
-
-			@Override
-			public void run() {
-				menu();
-			}
-
-		}		
+			}	
 	}
 
 	public class GM {
@@ -1056,15 +1067,15 @@ public class Sistema {
 
 	public class GP {
 		public int running;
-		public List<PCB> filaProcessos;
+		public volatile List<PCB> filaProcessos;
 
 		public int registro = 0;
 
 		public GP() {
-			this.filaProcessos = new ArrayList<PCB>();
+			this.filaProcessos = Collections.synchronizedList(new ArrayList<PCB>());
 		}
 
-		public boolean criaProcesso(Word[] programa) {
+		public synchronized boolean criaProcesso(Word[] programa) {
 			if (vm.gm.aloca(programa.length)) {
 				registro++;
 				System.out.println("Conseguiu alocar.");
